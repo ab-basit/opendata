@@ -29,6 +29,8 @@ use crate::reader::{LogIterator, LogRead};
 use crate::segment::SegmentCache;
 use crate::storage::LogStorage;
 
+const WRITE_CHANNEL: &str = "write";
+
 /// The main log interface providing read and write operations.
 ///
 /// `LogDb` is the primary entry point for interacting with OpenData Log.
@@ -210,6 +212,22 @@ impl LogDb {
             .as_millis() as i64
     }
 
+    /// Checks if the underlying storage is accessible.
+    ///
+    /// This performs a lightweight read operation to verify that the storage
+    /// backend is responding. Use this for health/readiness checks.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if storage is accessible, or an error if the check fails.
+    pub async fn check_storage(&self) -> Result<()> {
+        // Read the sequence block - this is a single key lookup that verifies
+        // storage is accessible without scanning or listing data.
+        let seq_key = Bytes::from_static(&crate::serde::SEQ_BLOCK_KEY);
+        let _ = self.storage.as_read().get(seq_key).await?;
+        Ok(())
+    }
+
     /// Forces creation of a new segment, sealing the current one.
     ///
     /// This is an internal API for testing multi-segment scenarios. It forces
@@ -281,11 +299,12 @@ impl LogDb {
         let flusher = LogFlusher::new(log_storage.clone());
         let mut coordinator = WriteCoordinator::new(
             WriteCoordinatorConfig::default(),
+            vec![WRITE_CHANNEL.to_string()],
             context,
             log_storage.snapshot().await?,
             flusher,
         );
-        let handle = coordinator.handle();
+        let handle = coordinator.handle(WRITE_CHANNEL);
 
         let read_inner = Arc::new(RwLock::new(LogReadInner::new(
             log_storage_read,
@@ -430,11 +449,12 @@ impl LogDbBuilder {
         let snapshot = log_storage.snapshot().await?;
         let mut coordinator = WriteCoordinator::new(
             WriteCoordinatorConfig::default(),
+            vec![WRITE_CHANNEL.to_string()],
             context,
             snapshot,
             flusher,
         );
-        let handle = coordinator.handle();
+        let handle = coordinator.handle(WRITE_CHANNEL);
 
         let read_inner = Arc::new(RwLock::new(LogReadInner::new(
             log_storage_read,
